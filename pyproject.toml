@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcd2grid"
+version = "0.1.0"
+description = "Convert 3D point cloud maps (PCD, PLY, LAS/LAZ, NPY) into 2D occupancy grids for ROS 2 Nav2"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Leonhart999" }]
+dependencies = ["numpy>=1.21", "scipy>=1.7", "Pillow>=9.0"]
+keywords = ["ros2", "nav2", "slam", "point-cloud", "occupancy-grid", "pcd"]
+
+[project.optional-dependencies]
+las = ["laspy>=2.0"]
+dev = ["pytest>=7", "build>=1.2", "setuptools>=61", "wheel"]
+
+[project.scripts]
+pcd2grid = "pcd2grid.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
