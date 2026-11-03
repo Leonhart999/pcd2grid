@@ -49,6 +49,7 @@ The output map uses the same frame as the input cloud (for FAST-LIO2 that is `ca
 | `--mode` | `trinary` (default), `scale` or `raw` |
 | `--npy` | Also write an occupancy array (0..100, -1 unknown) |
 | `--no-preview` | Skip the preview PNG |
+| `--compare` | Also write `<prefix>_compare.png` (see below) |
 
 Run `pcd2grid --help` for the full list.
 
@@ -58,6 +59,16 @@ Run `pcd2grid --help` for the full list.
 - PLY: ASCII and binary (little/big endian), vertex positions only
 - LAS/LAZ: needs the optional `laspy` dependency
 - NPY: an (N, 3+) array whose first three columns are XYZ
+
+## Checking a result
+
+`--compare` writes three panels side by side, all on the same grid, so the same pixel is the same place in every panel:
+
+1. Point cloud top view: each cell shows its highest point, coloured by height above ground.
+2. Point classes: red = obstacle band, green = ground, blue = above the band (ignored, e.g. ceiling), orange = below ground.
+3. The occupancy grid that was written.
+
+Typical problems are easy to spot: walls that are red in panel 2 but missing in panel 3 need a lower `--min-points`; a floor that is blue or orange means the ground estimate is wrong (try `--level` or `--ground-z`).
 
 ## Tilted maps
 

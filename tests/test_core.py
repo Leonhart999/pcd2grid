@@ -153,6 +153,18 @@ def test_map_modes_write_expected_image(tmp_path, mode, ext):
         assert set(np.unique(img)) <= {OCC, FREE, UNKNOWN}
 
 
+def test_compare_image(tmp_path):
+    src = tmp_path / "room.npy"
+    np.save(src, make_room())
+    out = tmp_path / "room"
+    assert main([str(src), str(out), "--res", "0.1", "--compare"]) == 0
+    img = np.array(Image.open(str(out) + "_compare.png"))
+    assert img.ndim == 3 and img.shape[1] > 3 * img.shape[0] // 2
+    # The class panel must contain the ground and obstacle-band colours
+    colours = {tuple(c) for c in img.reshape(-1, 3)}
+    assert (60, 180, 75) in colours and (230, 40, 40) in colours
+
+
 def test_cli_and_yaml_output(tmp_path):
     src = tmp_path / "room.npy"
     np.save(src, make_room())

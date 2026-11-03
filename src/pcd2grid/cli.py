@@ -7,7 +7,7 @@ import numpy as np
 from . import __version__
 from .core import GridParams, convert
 from .io import read_points
-from .output import write_map
+from .output import write_compare, write_map
 
 
 def _floats(text, n, what):
@@ -69,6 +69,8 @@ def build_parser():
     ap.add_argument("--mode", choices=["trinary", "scale", "raw"], default="trinary",
                     help="map_server mode written to the yaml (default trinary)")
     ap.add_argument("--no-preview", action="store_true", help="do not write <prefix>_preview.png")
+    ap.add_argument("--compare", action="store_true",
+                    help="also write <prefix>_compare.png: point cloud top view, point classes and grid side by side")
     ap.add_argument("--npy", action="store_true", help="also write <prefix>.npy (occupancy 0..100, -1 unknown)")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return ap
@@ -83,11 +85,13 @@ def main(argv=None):
             min_points=args.min_points, ground_mode=args.ground_mode, tile=args.tile,
             up_axis=args.up_axis, transform=args.transform, crop=args.crop, voxel=args.voxel,
             z_slab=args.z_slab, inflate=args.inflate, origin=args.origin, ground_z=args.ground_z,
-            max_cells=args.max_cells, level=args.level)
+            max_cells=args.max_cells, level=args.level, layers=args.compare)
         print(f"read {len(xyz)} points from {args.input}")
         result = convert(xyz, params)
         files = write_map(result, args.out_prefix, mode=args.mode, origin_yaw=args.origin_yaw,
                           preview=not args.no_preview, save_npy=args.npy)
+        if args.compare:
+            files.append(write_compare(result, args.out_prefix + "_compare.png", obs_max=args.obs_max))
         if result.level_rotation is not None:
             # 4x4 transform from the input frame (after --up-axis/--transform) to the map frame
             t = np.eye(4)

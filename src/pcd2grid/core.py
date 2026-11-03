@@ -36,6 +36,7 @@ class GridParams:
     ground_z: float = None              # seed height for the ground fit; None = automatic
     max_cells: int = 100_000_000        # refuse grids larger than this
     level: bool = False                 # rotate the cloud so the detected floor is horizontal
+    layers: bool = False                # keep per-cell input views for a comparison image
 
 
 _UP_ROT = {
@@ -222,6 +223,7 @@ class GridResult:
     stats: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     level_rotation: np.ndarray = None   # 3x3 rotation applied by --level, None if not used
+    layers: dict = None                 # per-cell input views, only when GridParams.layers is set
 
     @property
     def image(self):
@@ -279,6 +281,23 @@ def convert(xyz, p=None):
     gnd_count = np.zeros((hgt, w), dtype=np.int32)
     np.add.at(gnd_count, (iy[gnd], ix[gnd]), 1)
 
+    layers = None
+    if p.layers:
+        # Per-cell views of the input for visual checking (see output.write_compare)
+        top = np.full((hgt, w), -np.inf)
+        np.maximum.at(top, (iy, ix), h)
+        above_count = np.zeros((hgt, w), dtype=np.int32)
+        np.add.at(above_count, (iy[h > p.obs_max], ix[h > p.obs_max]), 1)
+        below_count = np.zeros((hgt, w), dtype=np.int32)
+        np.add.at(below_count, (iy[h < -p.ground_tol], ix[h < -p.ground_tol]), 1)
+        # Class per cell, highest priority last: 1 below ground, 2 above band, 3 ground, 4 obstacle band
+        classes = np.zeros((hgt, w), dtype=np.uint8)
+        classes[below_count > 0] = 1
+        classes[above_count > 0] = 2
+        classes[gnd_count > 0] = 3
+        classes[obs_count > 0] = 4
+        layers = {"top_height": np.where(np.isfinite(top), top, np.nan), "classes": classes}
+
     occupied = obs_count >= p.min_points
     free = (gnd_count > 0) & ~occupied
     if p.closing_iters > 0:
@@ -299,4 +318,4 @@ def convert(xyz, p=None):
     if p.ground_mode != "none" and not occupied.any():
         warnings.append("no occupied cells; the ground estimate or the --obs-min/--obs-max band may be wrong")
     return GridResult(grid=grid, res=p.res, origin=(float(xmin), float(ymin)), info=level_info + ground_info,
-                      stats=stats, warnings=warnings, level_rotation=level_rot)
+                      stats=stats, warnings=warnings, level_rotation=level_rot, layers=layers)
