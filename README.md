@@ -1,5 +1,7 @@
 # pcd2grid
 
+**English** | [简体中文](README.zh-CN.md)
+
 Convert 3D point cloud maps (PCD, PLY, LAS/LAZ, NPY) into 2D occupancy grids (`.pgm` + `.yaml`) that ROS 2 Nav2 `map_server` can load.
 
 The tool uses height-band projection:
