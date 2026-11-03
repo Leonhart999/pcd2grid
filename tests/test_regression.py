@@ -1,5 +1,6 @@
 """Extra tests: LZF/binary_compressed PCD, up-axis rotation, grid ground mode, map orientation."""
 import numpy as np
+import pytest
 
 from pcd2grid.core import FREE, OCC, GridParams, convert, orient
 from pcd2grid.io import read_pcd
@@ -38,6 +39,46 @@ def test_up_axis_rotations_map_axis_to_z():
                       "-x": [-1, 0, 0], "-y": [0, -1, 0], "-z": [0, 0, -1]}.items():
         out = orient(np.array([vec], dtype=float), axis)
         assert np.isclose(out[0, 2], 1.0), axis
+
+
+def tripod_room(seed=5):
+    """Room scanned from 1.3 m height: the ceiling has three times as many points as the floor."""
+    rng = np.random.default_rng(seed)
+    fx, fy = rng.uniform(0, 8, 20000), rng.uniform(0, 6, 20000)
+    cx, cy = rng.uniform(0, 8, 60000), rng.uniform(0, 6, 60000)
+    t = rng.uniform(0, 8, 6000)
+    walls = np.c_[t, np.zeros_like(t), rng.uniform(-1.3, 1.6, 6000)]
+    return np.vstack([np.c_[fx, fy, np.full_like(fx, -1.3)], np.c_[cx, cy, np.full_like(cx, 1.6)], walls])
+
+
+def test_ground_is_floor_not_denser_ceiling():
+    r = convert(tripod_room(), GridParams(res=0.1))
+    ground = float(r.info.split("height ")[1].split(" m")[0])
+    assert abs(ground + 1.3) < 0.02
+    ix = int((4.0 - r.origin[0]) / r.res)
+    assert r.grid[int((3.0 - r.origin[1]) / r.res), ix] == FREE
+    assert r.grid[int((0.0 - r.origin[1]) / r.res), ix] == OCC
+    assert not r.warnings
+
+
+def test_level_fixes_tilted_cloud():
+    xyz = tripod_room()
+    a = np.radians(25.0)
+    rot = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+    tilted = xyz @ rot.T
+    plain = convert(tilted, GridParams(res=0.1))
+    assert any("--level" in w for w in plain.warnings)
+    levelled = convert(tilted, GridParams(res=0.1, level=True))
+    assert "tilted 25.0" in levelled.info
+    assert np.allclose(levelled.level_rotation @ rot, np.eye(3), atol=0.01)
+    ground_tilt = float(levelled.info.split("ground plane tilt ")[1].split(" deg")[0])
+    assert ground_tilt < 0.5
+
+
+def test_huge_extent_is_refused_before_allocating():
+    xyz = np.array([[0.0, 0.0, 0.0]] * 20 + [[5000.0, 5000.0, 0.0]] * 20)
+    with pytest.raises(ValueError, match="above the limit"):
+        convert(xyz, GridParams(res=0.05))
 
 
 def test_grid_mode_handles_two_slopes():

@@ -134,6 +134,25 @@ def test_ply_and_npy(tmp_path):
     assert np.allclose(read_points(str(tmp_path / "a.npy")), xyz)
 
 
+@pytest.mark.parametrize("mode,ext", [("trinary", ".pgm"), ("scale", ".png"), ("raw", ".pgm")])
+def test_map_modes_write_expected_image(tmp_path, mode, ext):
+    r = convert(make_room(), GridParams(res=0.1))
+    out = tmp_path / "m"
+    files = write_map(r, str(out), mode=mode, preview=False)
+    assert files[0].endswith("m" + ext)
+    yaml_text = (tmp_path / "m.yaml").read_text()
+    assert f"mode: {mode}" in yaml_text and f"image: m{ext}" in yaml_text
+    assert "free_thresh: 0.15" in yaml_text
+    img = np.array(Image.open(files[0]))
+    if mode == "scale":
+        # unknown cells must be fully transparent so map_server reads them as -1
+        assert img.shape[2] == 4 and (img[..., 3] == 0).any()
+    elif mode == "raw":
+        assert set(np.unique(img)) <= {0, 100, 255}
+    else:
+        assert set(np.unique(img)) <= {OCC, FREE, UNKNOWN}
+
+
 def test_cli_and_yaml_output(tmp_path):
     src = tmp_path / "room.npy"
     np.save(src, make_room())

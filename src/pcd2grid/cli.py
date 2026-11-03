@@ -48,6 +48,12 @@ def build_parser():
     ap.add_argument("--ground-mode", choices=["plane", "grid", "none"], default="plane",
                     help="plane: one global plane; grid: per-tile planes; none: absolute z")
     ap.add_argument("--tile", type=float, default=5.0, help="tile size for --ground-mode grid, m")
+    ap.add_argument("--ground-z", type=float, help="approximate ground height to start the fit from "
+                    "(default: lowest strong peak of the height histogram)")
+    ap.add_argument("--level", action="store_true",
+                    help="detect the floor plane and rotate the cloud so it is horizontal; the rotation "
+                         "is saved to <prefix>_level.txt")
+    ap.add_argument("--max-cells", type=int, default=100_000_000, help="refuse grids with more cells than this")
     ap.add_argument("--up-axis", choices=["x", "y", "z", "-x", "-y", "-z"], default="z",
                     help="which input axis points up (default z)")
     ap.add_argument("--transform", type=_matrix, metavar="FILE|16_NUMBERS",
@@ -76,16 +82,25 @@ def main(argv=None):
             res=args.res, obs_min=args.obs_min, obs_max=args.obs_max, ground_tol=args.ground_tol,
             min_points=args.min_points, ground_mode=args.ground_mode, tile=args.tile,
             up_axis=args.up_axis, transform=args.transform, crop=args.crop, voxel=args.voxel,
-            z_slab=args.z_slab, inflate=args.inflate, origin=args.origin)
+            z_slab=args.z_slab, inflate=args.inflate, origin=args.origin, ground_z=args.ground_z,
+            max_cells=args.max_cells, level=args.level)
         print(f"read {len(xyz)} points from {args.input}")
         result = convert(xyz, params)
         files = write_map(result, args.out_prefix, mode=args.mode, origin_yaw=args.origin_yaw,
                           preview=not args.no_preview, save_npy=args.npy)
+        if result.level_rotation is not None:
+            # 4x4 transform from the input frame (after --up-axis/--transform) to the map frame
+            t = np.eye(4)
+            t[:3, :3] = result.level_rotation
+            np.savetxt(args.out_prefix + "_level.txt", t, fmt="%.9f")
+            files.append(args.out_prefix + "_level.txt")
     except (ValueError, ImportError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     s = result.stats
     print(result.info)
+    for w in result.warnings:
+        print(f"warning: {w}", file=sys.stderr)
     print(f"grid {s['width']} x {s['height']} cells ({s['width'] * result.res:.1f} m x "
           f"{s['height'] * result.res:.1f} m), occupied {s['occupied']:.1%}, free {s['free']:.1%}")
     print(f"lower-left origin ({result.origin[0]:.2f}, {result.origin[1]:.2f}); wrote " + ", ".join(files))

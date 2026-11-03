@@ -36,6 +36,9 @@ The output map uses the same frame as the input cloud (for FAST-LIO2 that is `ca
 | `--obs-min`, `--obs-max` | Obstacle height band above ground, in metres |
 | `--ground-mode` | `plane` (default), `grid` (per-tile planes for ramps and uneven floors) or `none` (absolute z) |
 | `--tile` | Tile size for `--ground-mode grid` |
+| `--level` | Detect the floor plane and rotate the cloud so it is horizontal; the rotation is saved to `<prefix>_level.txt` |
+| `--ground-z` | Approximate floor height to start the ground fit from, if the automatic choice is wrong |
+| `--max-cells` | Refuse grids larger than this (default 100 million cells) |
 | `--up-axis` | Input axis that points up: `x`, `y`, `z`, `-x`, `-y`, `-z` |
 | `--transform` | 4x4 matrix (txt/npy file or 16 numbers) applied after `--up-axis` |
 | `--crop` | Crop box `xmin,xmax,ymin,ymax,zmin,zmax` (leave a value empty to keep it open) |
@@ -56,9 +59,24 @@ Run `pcd2grid --help` for the full list.
 - LAS/LAZ: needs the optional `laspy` dependency
 - NPY: an (N, 3+) array whose first three columns are XYZ
 
+## Tilted maps
+
+LiDAR-inertial SLAM systems such as FAST-LIO2 use the first IMU pose as the map frame. If the sensor is mounted at an angle, the whole map is tilted, and a horizontal height band cuts through the floor. pcd2grid checks the floor tilt on every run and prints a warning above 5 degrees. Pass `--level` to rotate the cloud first. The rotation is about the origin, so the map origin still matches the SLAM start pose, but the map axes are now gravity-aligned. Use `<prefix>_level.txt` if you need to relate the two frames.
+
+## How the floor is found
+
+The floor is taken as the lowest strong peak of the height histogram, not the highest one, because in a room scanned from a tripod the ceiling often has more points than the floor. If this still picks the wrong surface, pass `--ground-z` with a rough floor height.
+
+## Verification
+
+- Simulated FAST-LIO2 office and warehouse maps: output is identical, cell for cell, to the maps produced by the original `pcd_to_grid.py` and used in Nav2 navigation tests.
+- All three map modes were loaded with Nav2 `map_server` (ROS 2 Humble): free cells read 0, occupied cells 100 and unknown cells -1.
+- Real data: PCL sample room scans (`binary_compressed` PCD), an M3DGR FAST-LIO2 map (tilted 28 degrees, converted with `--level`), and laspy LAS/LAZ samples.
+- `--ground-mode grid` was only tested on synthetic ramps and near-flat maps.
+
 ## Origin
 
-The algorithm comes from `pcd_to_grid.py`, written for a LiDAR SLAM thesis project. On the same FAST-LIO2 office map, the output of this tool is identical to the original script's, cell for cell.
+The algorithm comes from `pcd_to_grid.py`, written for a LiDAR SLAM thesis project.
 
 ## Tests
 

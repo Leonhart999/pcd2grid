@@ -14,7 +14,7 @@ dependencies = ["numpy>=1.21", "scipy>=1.7", "Pillow>=9.0"]
 keywords = ["ros2", "nav2", "slam", "point-cloud", "occupancy-grid", "pcd"]
 
 [project.optional-dependencies]
-las = ["laspy>=2.0"]
+las = ["laspy[lazrs]>=2.0"]
 dev = ["pytest>=7", "build>=1.2", "setuptools>=61", "wheel"]
 
 [project.scripts]

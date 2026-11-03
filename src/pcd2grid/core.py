@@ -33,6 +33,9 @@ class GridParams:
     inflate: float = 0.0                # obstacle inflation radius in metres
     origin: tuple = None                # (x, y) override for the lower-left corner
     closing_iters: int = 2
+    ground_z: float = None              # seed height for the ground fit; None = automatic
+    max_cells: int = 100_000_000        # refuse grids larger than this
+    level: bool = False                 # rotate the cloud so the detected floor is horizontal
 
 
 _UP_ROT = {
@@ -58,6 +61,54 @@ def orient(xyz, up_axis="z", transform=None):
     return xyz
 
 
+def lowest_per_cell(xyz, cell):
+    """Lowest point of every `cell` x `cell` column. Floor points dominate this set even when
+    walls or the ceiling have far more points, because those are never the lowest in a column."""
+    k = np.floor(xyz[:, :2] / cell).astype(np.int64)
+    key = (k[:, 0] - k[:, 0].min()) * (k[:, 1].max() - k[:, 1].min() + 1) + (k[:, 1] - k[:, 1].min())
+    order = np.lexsort((xyz[:, 2], key))
+    ks = key[order]
+    first = np.r_[True, ks[1:] != ks[:-1]]
+    return xyz[order][first]
+
+
+def estimate_level_rotation(xyz, cell=0.5, tol=0.1, iters=2000, max_tilt=45.0, seed=0):
+    """Find the floor plane by RANSAC over per-cell lowest points and return the rotation that
+    makes its normal point along +z, together with the floor tilt in degrees."""
+    q = lowest_per_cell(xyz, cell)
+    if len(q) < 3:
+        return np.eye(3), 0.0
+    rng = np.random.default_rng(seed)
+    best_inliers = None
+    cos_max = np.cos(np.radians(max_tilt))
+    for _ in range(iters):
+        s = q[rng.choice(len(q), 3, replace=False)]
+        n = np.cross(s[1] - s[0], s[2] - s[0])
+        norm = np.linalg.norm(n)
+        if norm < 1e-9 or abs(n[2]) / norm < cos_max:
+            continue
+        inliers = np.abs((q - s[0]) @ (n / norm)) < tol
+        if best_inliers is None or inliers.sum() > best_inliers.sum():
+            best_inliers = inliers
+    if best_inliers is None or best_inliers.sum() < 3:
+        return np.eye(3), 0.0
+    # Refine with a total least-squares plane through the inliers
+    pts = q[best_inliers]
+    n = np.linalg.svd(pts - pts.mean(axis=0), full_matrices=False)[2][-1]
+    if n[2] < 0:
+        n = -n
+    tilt = float(np.degrees(np.arccos(np.clip(n[2], -1.0, 1.0))))
+    # Rodrigues rotation taking n onto +z
+    z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(n, z)
+    s = np.linalg.norm(v)
+    if s < 1e-12:
+        return np.eye(3), tilt
+    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    rot = np.eye(3) + vx + vx @ vx * ((1 - n @ z) / (s * s))
+    return rot, tilt
+
+
 def voxel_downsample(xyz, size):
     """Keep one point per voxel (the first one found)."""
     if size <= 0:
@@ -80,13 +131,25 @@ def apply_crop(xyz, crop):
     return xyz[m]
 
 
-def estimate_ground(z, bin_size=0.02):
-    """Height of the most populated z histogram bin."""
+def estimate_ground(z, bin_size=0.02, min_frac=0.2, window=0.1):
+    """Height of the lowest strong peak of the z histogram.
+
+    The most populated height is not always the floor: in a room scanned from a tripod the
+    ceiling usually has more points. So smooth the histogram over `window` metres, keep the
+    local maxima that reach `min_frac` of the highest one, and take the lowest of them.
+    """
     lo, hi = np.percentile(z, 1), np.percentile(z, 99)
     if hi - lo < bin_size:
         return float(np.median(z))
     hist, edges = np.histogram(z, bins=np.arange(lo, hi + bin_size, bin_size))
-    k = int(np.argmax(hist))
+    half = max(1, int(round(window / bin_size / 2)))
+    smooth = np.convolve(hist, np.ones(2 * half + 1), mode="same")
+    local_max = smooth == ndimage.maximum_filter1d(smooth, size=2 * half + 1, mode="constant")
+    peaks = np.flatnonzero(local_max & (smooth >= min_frac * smooth.max()))
+    first = peaks[0]
+    # Refine to the most populated raw bin around the smoothed peak
+    s, e = max(0, first - half), min(len(hist), first + half + 1)
+    k = s + int(np.argmax(hist[s:e]))
     return 0.5 * (edges[k] + edges[k + 1])
 
 
@@ -104,16 +167,30 @@ def fit_ground_plane(xyz, z0, tols=(0.2, 0.08, 0.05)):
     return a, b, c
 
 
-def height_above_ground(xyz, mode, tile):
-    """Return per-point height above the estimated ground and a short description."""
+def ground_warnings(h, a, b):
+    """Plausibility checks on a fitted ground plane; returns a list of warning strings."""
+    warnings = []
+    tilt = np.degrees(np.arctan(np.hypot(a, b)))
+    if tilt > 15.0:
+        warnings.append(f"fitted ground is tilted {tilt:.1f} deg; try --level, or check --up-axis")
+    below = float(np.mean(h < -0.3))
+    if below > 0.2:
+        warnings.append(f"{below:.0%} of the points lie more than 0.3 m below the fitted ground; "
+                        "it may be a ceiling or table, try --ground-z")
+    return warnings
+
+
+def height_above_ground(xyz, mode, tile, ground_z=None):
+    """Return per-point height above the estimated ground, a description and warnings."""
     if mode == "none":
-        return xyz[:, 2].copy(), "no ground estimation (absolute z)"
-    g0 = estimate_ground(xyz[:, 2])
+        return xyz[:, 2].copy(), "no ground estimation (absolute z)", []
+    g0 = estimate_ground(xyz[:, 2]) if ground_z is None else ground_z
     a, b, c = fit_ground_plane(xyz, g0)
     h = xyz[:, 2] - (a * xyz[:, 0] + b * xyz[:, 1] + c)
+    warnings = ground_warnings(h, a, b)
     if mode == "plane":
         tilt = np.degrees(np.arctan(np.hypot(a, b)))
-        return h, f"ground plane tilt {tilt:.2f} deg, height {c:.3f} m at the origin"
+        return h, f"ground plane tilt {tilt:.2f} deg, height {c:.3f} m at the origin", warnings
     if mode != "grid":
         raise ValueError(f"invalid ground mode '{mode}'")
     # Per-tile plane fit; tiles with too few ground points fall back to the global plane
@@ -133,7 +210,7 @@ def height_above_ground(xyz, mode, tile):
         la, lb, lc = fit_ground_plane(pts, zl)
         out[sel] = pts[:, 2] - (la * pts[:, 0] + lb * pts[:, 1] + lc)
         n_local += 1
-    return out, f"local ground planes fitted in {n_local} tiles of {tile:g} m"
+    return out, f"local ground planes fitted in {n_local} tiles of {tile:g} m", warnings
 
 
 @dataclass
@@ -143,6 +220,8 @@ class GridResult:
     origin: tuple                   # (x, y) of the lower-left corner
     info: str = ""
     stats: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+    level_rotation: np.ndarray = None   # 3x3 rotation applied by --level, None if not used
 
     @property
     def image(self):
@@ -154,14 +233,23 @@ def convert(xyz, p=None):
     """Convert an (N, 3) point cloud to a GridResult."""
     p = p or GridParams()
     xyz = orient(np.asarray(xyz, dtype=np.float64), p.up_axis, p.transform)
+    level_rot, level_info, pre_warnings = None, "", []
+    if p.ground_mode != "none" and len(xyz) >= 3:
+        rot, tilt = estimate_level_rotation(xyz)
+        if p.level:
+            # Rotation about the origin, so the map origin stays where the SLAM frame origin was
+            level_rot = rot
+            xyz = xyz @ level_rot.T
+            level_info = f"levelled: floor was tilted {tilt:.2f} deg; "
+        elif tilt > 5.0:
+            pre_warnings.append(f"the floor looks tilted by {tilt:.1f} deg; the height band will cut through "
+                                "it. Use --level to rotate the cloud first")
     xyz = apply_crop(xyz, p.crop)
     if p.z_slab is not None:
         xyz = xyz[(xyz[:, 2] >= p.z_slab[0]) & (xyz[:, 2] <= p.z_slab[1])]
     xyz = voxel_downsample(xyz, p.voxel)
     if len(xyz) < 10:
         raise ValueError("too few points left after filtering")
-
-    h, ground_info = height_above_ground(xyz, p.ground_mode, p.tile)
 
     if p.origin is not None:
         xmin, ymin = p.origin
@@ -171,6 +259,14 @@ def convert(xyz, p=None):
         xmax, ymax = xyz[:, :2].max(axis=0) + 0.5
     w = int(np.ceil((xmax - xmin) / p.res))
     hgt = int(np.ceil((ymax - ymin) / p.res))
+    # Check the size before allocating: georeferenced clouds (LAS) can span kilometres
+    if w * hgt > p.max_cells:
+        raise ValueError(f"grid would be {w} x {hgt} cells ({(xmax - xmin):.0f} m x {(ymax - ymin):.0f} m) "
+                         f"at {p.res} m/cell, above the limit of {p.max_cells}; "
+                         "use a larger --res, --crop the area, or raise --max-cells")
+
+    h, ground_info, warnings = height_above_ground(xyz, p.ground_mode, p.tile, p.ground_z)
+    warnings = pre_warnings + warnings
     ix = np.floor((xyz[:, 0] - xmin) / p.res).astype(np.int64)
     iy = np.floor((xyz[:, 1] - ymin) / p.res).astype(np.int64)
     inside = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < hgt)
@@ -200,4 +296,7 @@ def convert(xyz, p=None):
     total = w * hgt
     stats = {"width": w, "height": hgt, "points": int(len(xyz)),
              "occupied": float(occupied.sum() / total), "free": float(free.sum() / total)}
-    return GridResult(grid=grid, res=p.res, origin=(float(xmin), float(ymin)), info=ground_info, stats=stats)
+    if p.ground_mode != "none" and not occupied.any():
+        warnings.append("no occupied cells; the ground estimate or the --obs-min/--obs-max band may be wrong")
+    return GridResult(grid=grid, res=p.res, origin=(float(xmin), float(ymin)), info=level_info + ground_info,
+                      stats=stats, warnings=warnings, level_rotation=level_rot)
