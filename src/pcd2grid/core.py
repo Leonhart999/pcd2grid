@@ -198,10 +198,15 @@ def height_above_ground(xyz, mode, tile, ground_z=None):
     tx = np.floor((xyz[:, 0] - xyz[:, 0].min()) / tile).astype(np.int64)
     ty = np.floor((xyz[:, 1] - xyz[:, 1].min()) / tile).astype(np.int64)
     key = tx * (ty.max() + 1) + ty
+    # Sort once and slice per tile: comparing every point with every tile key is O(points x tiles).
+    # The sort is stable, so each tile sees its points in the original order and the result is unchanged.
+    order = np.argsort(key, kind="stable")
+    sorted_key = key[order]
+    edges = np.flatnonzero(np.r_[True, sorted_key[1:] != sorted_key[:-1], True])
     out = h.copy()
     n_local = 0
-    for k in np.unique(key):
-        sel = key == k
+    for start, stop in zip(edges[:-1], edges[1:]):
+        sel = order[start:stop]
         pts = xyz[sel]
         lo = np.percentile(pts[:, 2], 5)
         near = pts[np.abs(pts[:, 2] - (lo + 0.1)) < 0.25]
