@@ -72,7 +72,7 @@ Typical problems are easy to spot: walls that are red in panel 2 but missing in 
 
 ## Examples
 
-Both maps were built with FAST-LIO2 in Gazebo Fortress simulation (diff-drive robot, 16-beam LiDAR 0.3 m above the base) and converted with the default settings. The grids were then used as Nav2 maps with AMCL localisation.
+The office and warehouse maps were built with FAST-LIO2 in Gazebo Fortress simulation (diff-drive robot, 16-beam LiDAR 0.3 m above the base) and converted with the default settings. The grids were then used as Nav2 maps with AMCL localisation.
 
 ### Office
 
@@ -110,6 +110,36 @@ Only points between 0.1 m and 0.7 m above the floor count as obstacles. Where th
 
 The warehouse scene is the Gazebo Fuel world "Tugbot in Warehouse" with models by OpenRobotics and MovAi, licensed CC BY-NC 4.0 and CC BY-NC-ND 4.0. Only a map derived from the simulation is shown here; no model files are included.
 
+### SLABIM 4F: global versus local ground
+
+This example uses a **simulated LiDAR map**, not points sampled directly from BIM surfaces. A robot scanned a Gazebo scene derived from the SLABIM HKUST main-building 4F BIM meshes, and FAST-LIO2 produced a 5,755,840-point map in its `camera_init` frame. The acquisition route covered the connected region reachable from the start, not every part of the storey.
+
+The run exhibited substantial vertical drift (approximately 3 m maximum estimated height deviation). It is a challenging conversion example, **not a navigation-quality mapping benchmark**.
+
+Both conversions use the same input, 0.1 m grid resolution and 0.1 m voxel downsampling. Other settings retain their defaults, including the 0.1–0.7 m obstacle height band. Local mode fits a separate ground plane in each 5 m tile.
+
+```bash
+pcd2grid map_3d.pcd maps/slabim_global --res 0.1 --voxel 0.1 --compare
+pcd2grid map_3d.pcd maps/slabim_local --res 0.1 --voxel 0.1 --ground-mode grid --tile 5 --compare
+```
+
+| Ground model | Grid size | Occupied cells | Free cells |
+| --- | --- | --- | --- |
+| Global plane | 3262 × 1570 | 7.5% | 2.3% |
+| Local planes (5 m tiles) | 3262 × 1570 | 2.8% | 22.8% |
+
+**Global plane:**
+
+![SLABIM simulated scan with global ground: point cloud, classes and occupancy grid](docs/images/slabim_global_compare.png)
+
+**Local planes:**
+
+![SLABIM simulated scan with local ground: point cloud, classes and occupancy grid](docs/images/slabim_local_compare.png)
+
+Local ground estimation recovers more continuous floor regions and clearer room and corridor outlines. A single global plane misclassifies much of the height-varying floor as obstacles or ignores it. However, a larger free-cell percentage alone is not an accuracy measure: local planes do not correct SLAM drift, align duplicate surfaces or guarantee doorway connectivity. Black clusters, incomplete walls and unknown regions remain; neither output has been validated in Nav2 navigation.
+
+Source geometry: [SLABIM dataset](https://huggingface.co/datasets/BobH62/SLABIM), Huang et al., *SLABIM: A SLAM-BIM Coupled Dataset in HKUST Main Building*, ICRA 2025 ([paper](https://arxiv.org/abs/2502.16856)). Only conversion-result images are included here; the BIM meshes and input point cloud are not redistributed.
+
 ## Tilted maps
 
 LiDAR-inertial SLAM systems such as FAST-LIO2 use the first IMU pose as the map frame. If the sensor is mounted at an angle, the whole map is tilted, and a horizontal height band cuts through the floor. pcd2grid checks the floor tilt on every run and prints a warning above 5 degrees. Pass `--level` to rotate the cloud first. The rotation is about the origin, so the map origin still matches the SLAM start pose, but the map axes are now gravity-aligned. Use `<prefix>_level.txt` if you need to relate the two frames.
@@ -123,7 +153,7 @@ The floor is taken as the lowest strong peak of the height histogram, not the hi
 - Simulated FAST-LIO2 office and warehouse maps: output is identical, cell for cell, to the maps produced by the original `pcd_to_grid.py` and used in Nav2 navigation tests.
 - All three map modes were loaded with Nav2 `map_server` (ROS 2 Humble): free cells read 0, occupied cells 100 and unknown cells -1.
 - Real data: PCL sample room scans (`binary_compressed` PCD), an M3DGR FAST-LIO2 map (tilted 28 degrees, converted with `--level`), and laspy LAS/LAZ samples.
-- `--ground-mode grid` was only tested on synthetic ramps and near-flat maps.
+- `--ground-mode grid` was tested on synthetic ramps, near-flat maps and the vertically drifting SLABIM simulated scan above. This does not establish accuracy on real uneven terrain or navigation safety.
 
 ## Origin
 
