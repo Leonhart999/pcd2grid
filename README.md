@@ -70,6 +70,46 @@ Run `pcd2grid --help` for the full list.
 
 Typical problems are easy to spot: walls that are red in panel 2 but missing in panel 3 need a lower `--min-points`; a floor that is blue or orange means the ground estimate is wrong (try `--level` or `--ground-z`).
 
+## Examples
+
+Both maps were built with FAST-LIO2 in Gazebo Fortress simulation (diff-drive robot, 16-beam LiDAR 0.3 m above the base) and converted with the default settings. The grids were then used as Nav2 maps with AMCL localisation.
+
+### Office
+
+Two rooms with a doorway, desks, a round column and a cabinet. 804,344 points.
+
+```bash
+pcd2grid sim_office_04.pcd maps/office --compare
+```
+
+```text
+ground plane tilt 0.30 deg, height -0.070 m at the origin
+grid 345 x 219 cells (17.2 m x 11.0 m), occupied 5.8%, free 69.8%
+```
+
+![Office: point cloud top view, point classes and occupancy grid](docs/images/office_compare.png)
+
+Walls and furniture fall in the obstacle band (red, middle) and become occupied cells (black, right). The floor is green in the middle panel and free in the grid. The gray patches inside the desks and cabinet are cells the LiDAR never saw. In Nav2 tests on this map, the robot reached 6 of 6 goals.
+
+### Warehouse
+
+A 75 m x 54 m warehouse with long shelving rows, shelf units and pallets. 1,811,663 points.
+
+```bash
+pcd2grid sim_wh_01.pcd maps/warehouse --compare
+```
+
+```text
+ground plane tilt 0.65 deg, height -0.134 m at the origin
+grid 1509 x 1074 cells (75.5 m x 53.7 m), occupied 1.1%, free 19.6%
+```
+
+![Warehouse: point cloud top view, point classes and occupancy grid](docs/images/warehouse_compare.png)
+
+Only points between 0.1 m and 0.7 m above the floor count as obstacles. Where the LiDAR saw only the upper shelf levels, the cells are blue (ignored) in the middle panel; the shelf edges that reach down into the band are red and outline the shelves in the grid. The speckled areas around the building come from sparse returns outside the walls. In Nav2 tests on this map, the robot reached 7 of 7 goals.
+
+The warehouse scene is the Gazebo Fuel world "Tugbot in Warehouse" with models by OpenRobotics and MovAi, licensed CC BY-NC 4.0 and CC BY-NC-ND 4.0. Only a map derived from the simulation is shown here; no model files are included.
+
 ## Tilted maps
 
 LiDAR-inertial SLAM systems such as FAST-LIO2 use the first IMU pose as the map frame. If the sensor is mounted at an angle, the whole map is tilted, and a horizontal height band cuts through the floor. pcd2grid checks the floor tilt on every run and prints a warning above 5 degrees. Pass `--level` to rotate the cloud first. The rotation is about the origin, so the map origin still matches the SLAM start pose, but the map axes are now gravity-aligned. Use `<prefix>_level.txt` if you need to relate the two frames.
