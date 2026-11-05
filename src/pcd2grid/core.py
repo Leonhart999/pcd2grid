@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import ndimage
 
+from .processing import connectivity, ground_heightmap, raycast_free, remove_small
+
 OCC, FREE, UNKNOWN = 0, 254, 205  # pgm gray values: black = occupied, white = free, gray = unknown
 
 
@@ -37,6 +39,15 @@ class GridParams:
     max_cells: int = 100_000_000        # refuse grids larger than this
     level: bool = False                 # rotate the cloud so the detected floor is horizontal
     layers: bool = False                # keep per-cell input views for a comparison image
+    ground_cell: float = 0.5
+    ground_smooth: float = 0.5
+    min_obstacle_area: float = 0.0
+    min_free_area: float = 0.0
+    start: tuple = None
+    robot_radius: float = 0.0
+    trajectory: np.ndarray = None
+    ray_range: float = 10.0
+    max_rays: int = 200_000
 
 
 _UP_ROT = {
@@ -56,8 +67,8 @@ def orient(xyz, up_axis="z", transform=None):
     xyz = xyz @ _UP_ROT[up_axis].T
     if transform is not None:
         t = np.asarray(transform, dtype=np.float64)
-        if t.shape != (4, 4):
-            raise ValueError("transform must be a 4x4 matrix")
+        if t.shape != (4, 4) or not np.isfinite(t).all():
+            raise ValueError("transform must be a finite 4x4 matrix")
         xyz = xyz @ t[:3, :3].T + t[:3, 3]
     return xyz
 
@@ -239,7 +250,38 @@ class GridResult:
 def convert(xyz, p=None):
     """Convert an (N, 3) point cloud to a GridResult."""
     p = p or GridParams()
-    xyz = orient(np.asarray(xyz, dtype=np.float64), p.up_axis, p.transform)
+    for name in ("res", "tile", "ground_cell", "ray_range"):
+        if not np.isfinite(getattr(p, name)) or getattr(p, name) <= 0:
+            raise ValueError(f"{name} 必须是有限正数")
+    for name in ("ground_tol", "voxel", "inflate", "ground_smooth", "min_obstacle_area", "min_free_area", "robot_radius"):
+        if not np.isfinite(getattr(p, name)) or getattr(p, name) < 0:
+            raise ValueError(f"{name} 必须是有限非负数")
+    for name in ("min_points", "max_cells", "max_rays"):
+        value = getattr(p, name)
+        if not isinstance(value, (int, np.integer)) or value <= 0:
+            raise ValueError(f"{name} 必须是正整数")
+    if not isinstance(p.closing_iters, (int, np.integer)) or p.closing_iters < 0:
+        raise ValueError("closing_iters 必须是非负整数")
+    if p.ground_z is not None and not np.isfinite(p.ground_z):
+        raise ValueError("ground_z 必须是有限数")
+    if not np.isfinite([p.obs_min, p.obs_max]).all() or p.obs_min > p.obs_max:
+        raise ValueError("障碍高度区间无效")
+    if p.ground_mode not in ("plane", "grid", "heightmap", "none"):
+        raise ValueError("无效的 ground_mode")
+    xyz = np.asarray(xyz, dtype=np.float64)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all():
+        raise ValueError("点云必须是有限值的 (N, 3) 数组")
+    if p.origin is not None and (len(p.origin) != 2 or not np.isfinite(p.origin).all()):
+        raise ValueError("origin 必须是有限的二维坐标")
+    if p.start is not None and (len(p.start) != 2 or not np.isfinite(p.start).all()):
+        raise ValueError("start 必须是输出地图坐标系中的有限二维坐标")
+    trajectory = None
+    if p.trajectory is not None:
+        trajectory = np.asarray(p.trajectory, dtype=np.float64)
+        if trajectory.ndim != 2 or trajectory.shape[1] != 3 or not len(trajectory) or not np.isfinite(trajectory).all():
+            raise ValueError("trajectory 必须是非空有限值 (N, 3) 数组")
+        trajectory = orient(trajectory, p.up_axis, p.transform)
+    xyz = orient(xyz, p.up_axis, p.transform)
     level_rot, level_info, pre_warnings = None, "", []
     if p.ground_mode != "none" and len(xyz) >= 3:
         rot, tilt = estimate_level_rotation(xyz)
@@ -247,6 +289,8 @@ def convert(xyz, p=None):
             # Rotation about the origin, so the map origin stays where the SLAM frame origin was
             level_rot = rot
             xyz = xyz @ level_rot.T
+            if trajectory is not None:
+                trajectory = trajectory @ level_rot.T
             level_info = f"levelled: floor was tilted {tilt:.2f} deg; "
         elif tilt > 5.0:
             pre_warnings.append(f"the floor looks tilted by {tilt:.1f} deg; the height band will cut through "
@@ -267,12 +311,19 @@ def convert(xyz, p=None):
     w = int(np.ceil((xmax - xmin) / p.res))
     hgt = int(np.ceil((ymax - ymin) / p.res))
     # Check the size before allocating: georeferenced clouds (LAS) can span kilometres
+    if w <= 0 or hgt <= 0:
+        raise ValueError("origin 位于点云范围之外，地图尺寸无效")
     if w * hgt > p.max_cells:
         raise ValueError(f"grid would be {w} x {hgt} cells ({(xmax - xmin):.0f} m x {(ymax - ymin):.0f} m) "
                          f"at {p.res} m/cell, above the limit of {p.max_cells}; "
                          "use a larger --res, --crop the area, or raise --max-cells")
 
-    h, ground_info, warnings = height_above_ground(xyz, p.ground_mode, p.tile, p.ground_z)
+    if p.ground_mode == "heightmap":
+        h, coverage = ground_heightmap(xyz, p.ground_cell, p.ground_smooth, p.max_cells)
+        ground_info = f"连续地面高度图，格宽 {p.ground_cell:g} m，观测覆盖 {coverage:.1%}"
+        warnings = ["高度图是单层下包络估计；大面积缺失地面、桌面或多楼层可能误分类，请检查输出"]
+    else:
+        h, ground_info, warnings = height_above_ground(xyz, p.ground_mode, p.tile, p.ground_z)
     warnings = pre_warnings + warnings
     ix = np.floor((xyz[:, 0] - xmin) / p.res).astype(np.int64)
     iy = np.floor((xyz[:, 1] - ymin) / p.res).astype(np.int64)
@@ -304,9 +355,23 @@ def convert(xyz, p=None):
         layers = {"top_height": np.where(np.isfinite(top), top, np.nan), "classes": classes}
 
     occupied = obs_count >= p.min_points
-    free = (gnd_count > 0) & ~occupied
+    removed_obstacles = np.zeros_like(occupied)
+    if p.min_obstacle_area > 0:
+        kept = remove_small(occupied, int(np.ceil(p.min_obstacle_area / p.res ** 2)))
+        removed_obstacles = occupied & ~kept
+        occupied = kept
+    free = (gnd_count > 0) & ~occupied & ~removed_obstacles
+    rays = 0
+    if trajectory is not None:
+        ray_free, rays = raycast_free(occupied | removed_obstacles, xyz[inside][obs | gnd], trajectory,
+                                     (xmin, ymin), p.res, p.ray_range, p.max_rays)
+        free |= ray_free & ~occupied & ~removed_obstacles
+        warnings.append("轨迹射线使用最近位置近似，非逐帧观测；不清除已有障碍，不能保证导航安全")
     if p.closing_iters > 0:
         free = ndimage.binary_closing(free, structure=np.ones((3, 3)), iterations=p.closing_iters) & ~occupied
+    free &= ~removed_obstacles
+    if p.min_free_area > 0:
+        free = remove_small(free, int(np.ceil(p.min_free_area / p.res ** 2)))
     if p.inflate > 0:
         r = int(np.ceil(p.inflate / p.res))
         yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
@@ -320,6 +385,12 @@ def convert(xyz, p=None):
     total = w * hgt
     stats = {"width": w, "height": hgt, "points": int(len(xyz)),
              "occupied": float(occupied.sum() / total), "free": float(free.sum() / total)}
+    if trajectory is not None:
+        stats["rays"] = rays
+    if p.start is not None or p.robot_radius > 0:
+        stats["connectivity"] = connectivity(grid, p.res, (xmin, ymin), p.start, p.robot_radius)
+        if p.start is not None and not stats["connectivity"]["start_valid"]:
+            warnings.append("连通性起点不在可通行格中；请检查起点坐标、未知区域和机器人半径")
     if p.ground_mode != "none" and not occupied.any():
         warnings.append("no occupied cells; the ground estimate or the --obs-min/--obs-max band may be wrong")
     return GridResult(grid=grid, res=p.res, origin=(float(xmin), float(ymin)), info=level_info + ground_info,

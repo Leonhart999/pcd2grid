@@ -11,7 +11,7 @@ The tool uses height-band projection:
 3. Cells that contain ground points and are not occupied are free.
 4. All other cells are unknown.
 
-It has no ROS dependency, only numpy, scipy and Pillow.
+It has no ROS dependency; it uses numpy, scipy, Pillow and PyYAML.
 
 ## Install
 
@@ -54,6 +54,89 @@ The output map uses the same frame as the input cloud (for FAST-LIO2 that is `ca
 | `--compare` | Also write `<prefix>_compare.png` (see below) |
 
 Run `pcd2grid --help` for the full list.
+
+## Development features (next release)
+
+Existing `plane` and tiled `grid` modes retain their behavior. The tiled implementation
+already sorts point indices once and slices each tile; it no longer scans all points
+for every tile. Sorting is O(N log N), followed by grouped processing, not strictly O(N).
+A regression test checks exact agreement with the legacy per-tile mask implementation.
+
+### Continuous ground and cleanup
+
+```bash
+pcd2grid map_3d.pcd maps/heightmap --res 0.1 --voxel 0.1 \
+  --ground-mode heightmap --ground-cell 0.5 --ground-smooth 0.5 \
+  --min-obstacle-area 0.03 --min-free-area 0.1 \
+  --start 0,0 --robot-radius 0.25 --report maps/heightmap.json
+```
+
+`heightmap` builds a per-cell minimum-height envelope, compensates minima to cell
+centers using local slopes, fills missing heights from the nearest observed cell,
+then applies a 3x3 median filter and Gaussian smoothing. Point heights are sampled
+bilinearly. `--ground-cell` and `--ground-smooth` are in metres. This is an optional
+single-floor model, not a guaranteed floor detector: isolated low outliers, elevated
+surfaces without floor returns, large holes and overlapping storeys can still fail.
+Crop to one storey and inspect the result before navigation. `--ground-z` seeds only
+plane/grid modes and does not constrain the heightmap.
+
+Component thresholds are in square metres and use four-connectivity. Both default
+to zero (disabled); removing small obstacles can remove real thin objects. Removed
+obstacles become unknown, never automatically free, even with ground returns below
+them. Small free components also become unknown. Cleanup runs before inflation.
+
+Connectivity is measured only in known free space; unknown and occupied cells,
+including space outside the grid, block motion. `--start X,Y` is in the **output map
+frame**, not the original point-cloud frame. An invalid start is reported explicitly
+instead of being snapped to another region. `--robot-radius` checks circular-robot
+clearance on the final map without altering it; it is not a Nav2 planner or a
+polygon-footprint feasibility guarantee. Existing `--inflate` therefore adds to
+this clearance conservatism. `--report` stores the command parameters, warnings
+and statistics as JSON; its parent directory must already exist (the map output
+directory is created automatically).
+
+### Trajectory raycasting (experimental)
+
+```bash
+pcd2grid map_3d.pcd maps/rays --ground-mode heightmap \
+  --trajectory estimated.tum --ray-range 10 --max-rays 200000
+```
+
+The TUM trajectory must be in the cloud frame. Its positions undergo the same
+up-axis, explicit transform and levelling as the points. Sensor orientation is not
+used. Rays are bounded by `--ray-range` (3D metres), deduplicated by endpoint XY cell
+and sampled deterministically to `--max-rays`. Only ground/obstacle-band endpoints
+participate. Each endpoint is associated with its nearest trajectory position in
+3D, **not its actual acquisition pose**: a fused PCD has no scan timestamps or
+per-frame rays. Rays stop at existing obstacles (including diagonal corner gaps),
+and **never clear occupied cells**. Do not interpret them as confirmed visibility
+or use them to erase ghosts. Safe temporal clearing requires timestamped scans,
+poses and sensor calibration, not `estimated.tum` plus a fused map alone.
+
+No new SLABIM accuracy or navigation improvement is claimed from these features.
+In particular, more free cells is not proof of a more accurate map.
+
+### BIM/grid evaluation
+
+```bash
+pcd2grid-eval maps/heightmap.yaml bim/floor.yaml \
+  --transform map_to_bim.txt --output maps/heightmap_eval.json
+```
+
+The transform maps prediction world coordinates to BIM/ground-truth world
+coordinates. It must be a planar rigid 4x4 transform. YAML map origins, including
+yaw, and differing resolutions are respected; prediction classes are sampled at
+ground-truth cell centers without automatic registration. Use independently
+verified alignment, and evaluate uninflated maps when measuring wall geometry.
+The JSON distinguishes full known-ground-truth (sampled at truth cell centers)
+and jointly-known support (sampled at prediction cell centers); missing
+or unknown predictions are not hits. Undefined ratios are JSON null, not NaN.
+Optional `--doors doors.json` accepts a list of objects with `start` and `end` XY
+coordinates in the BIM frame; `--robot-radius` checks those point pairs with a
+circular footprint. This tests global pair connectivity, not whether a particular
+local doorway is open; pairs should straddle the doorway and exclude alternate
+routes if doorway-specific correctness is required. No measured BIM metrics are
+included until the actual truth grid and alignment have been verified.
 
 ## Supported formats
 

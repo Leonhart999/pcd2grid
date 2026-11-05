@@ -1,5 +1,6 @@
 """Command line interface for pcd2grid."""
 import argparse
+import json
 import sys
 
 import numpy as np
@@ -8,6 +9,7 @@ from . import __version__
 from .core import GridParams, convert
 from .io import read_points
 from .output import write_compare, write_map
+from .processing import read_trajectory
 
 
 def _floats(text, n, what):
@@ -45,8 +47,18 @@ def build_parser():
     ap.add_argument("--obs-max", type=float, default=0.7, help="maximum obstacle height above ground, m")
     ap.add_argument("--ground-tol", type=float, default=0.05, help="max distance from ground to count as ground, m")
     ap.add_argument("--min-points", type=int, default=2, help="obstacle points needed to occupy a cell")
-    ap.add_argument("--ground-mode", choices=["plane", "grid", "none"], default="plane",
-                    help="plane: one global plane; grid: per-tile planes; none: absolute z")
+    ap.add_argument("--ground-mode", choices=["plane", "grid", "heightmap", "none"], default="plane",
+                    help="plane: 全局平面；grid: 分块平面；heightmap: 连续高度图；none: 绝对 z")
+    ap.add_argument("--ground-cell", type=float, default=0.5, help="地面高度图格宽，m")
+    ap.add_argument("--ground-smooth", type=float, default=0.5, help="地面高度图高斯平滑尺度，m")
+    ap.add_argument("--min-obstacle-area", type=float, default=0.0, help="删除小于此面积的孤立障碍，m²，默认关闭")
+    ap.add_argument("--min-free-area", type=float, default=0.0, help="删除小于此面积的孤立空闲块，m²")
+    ap.add_argument("--start", type=_pair, help="输出地图坐标系中的连通性检查起点 X,Y")
+    ap.add_argument("--robot-radius", type=float, default=0.0, help="连通性检查的圆形机器人半径，m；不修改地图")
+    ap.add_argument("--trajectory", help="与点云同坐标系的 TUM 轨迹，保守补全空闲区域")
+    ap.add_argument("--ray-range", type=float, default=10.0, help="轨迹到端点最大三维距离，m")
+    ap.add_argument("--max-rays", type=int, default=200_000, help="最大近似射线数")
+    ap.add_argument("--report", help="保存参数、警告和统计的 JSON 文件")
     ap.add_argument("--tile", type=float, default=5.0, help="tile size for --ground-mode grid, m")
     ap.add_argument("--ground-z", type=float, help="approximate ground height to start the fit from "
                     "(default: lowest strong peak of the height histogram)")
@@ -85,7 +97,12 @@ def main(argv=None):
             min_points=args.min_points, ground_mode=args.ground_mode, tile=args.tile,
             up_axis=args.up_axis, transform=args.transform, crop=args.crop, voxel=args.voxel,
             z_slab=args.z_slab, inflate=args.inflate, origin=args.origin, ground_z=args.ground_z,
-            max_cells=args.max_cells, level=args.level, layers=args.compare)
+            max_cells=args.max_cells, level=args.level, layers=args.compare,
+            ground_cell=args.ground_cell, ground_smooth=args.ground_smooth,
+            min_obstacle_area=args.min_obstacle_area, min_free_area=args.min_free_area,
+            start=args.start, robot_radius=args.robot_radius,
+            trajectory=read_trajectory(args.trajectory) if args.trajectory else None,
+            ray_range=args.ray_range, max_rays=args.max_rays)
         print(f"read {len(xyz)} points from {args.input}")
         result = convert(xyz, params)
         files = write_map(result, args.out_prefix, mode=args.mode, origin_yaw=args.origin_yaw,
@@ -98,6 +115,14 @@ def main(argv=None):
             t[:3, :3] = result.level_rotation
             np.savetxt(args.out_prefix + "_level.txt", t, fmt="%.9f")
             files.append(args.out_prefix + "_level.txt")
+        if args.report:
+            config = {key: value.tolist() if isinstance(value, np.ndarray) else value
+                      for key, value in vars(args).items()}
+            with open(args.report, "w", encoding="utf-8") as stream:
+                json.dump({"version": __version__, "parameters": config, "stats": result.stats,
+                           "warnings": result.warnings, "info": result.info},
+                          stream, ensure_ascii=False, indent=2, allow_nan=False)
+            files.append(args.report)
     except (ValueError, ImportError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -107,6 +132,10 @@ def main(argv=None):
         print(f"warning: {w}", file=sys.stderr)
     print(f"grid {s['width']} x {s['height']} cells ({s['width'] * result.res:.1f} m x "
           f"{s['height'] * result.res:.1f} m), occupied {s['occupied']:.1%}, free {s['free']:.1%}")
+    if "connectivity" in s:
+        print("连通性: " + json.dumps(s["connectivity"], ensure_ascii=False, allow_nan=False))
+    if "rays" in s:
+        print(f"有效近似射线: {s['rays']}")
     print(f"lower-left origin ({result.origin[0]:.2f}, {result.origin[1]:.2f}); wrote " + ", ".join(files))
     return 0
 

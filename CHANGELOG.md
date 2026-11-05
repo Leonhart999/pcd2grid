@@ -2,6 +2,23 @@
 
 All notable changes to pcd2grid are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Optional continuous `heightmap` ground model with per-cell minima, slope-to-center compensation, nearest-neighbor filling, median filtering and Gaussian smoothing.
+- Opt-in four-connected obstacle/free component area filters; deleted obstacles remain unknown.
+- `--start` / `--robot-radius` connectivity statistics and reproducible `--report` JSON output.
+- Experimental `--trajectory` TUM-based conservative free-space raycasting with range/ray budgets and obstacle/corner blocking. Fused clouds do not provide actual scan-pose correspondence; existing occupied cells are never cleared.
+- `pcd2grid-eval` with ROS YAML/image loading, planar rigid alignment, full-ground-truth/common-known occupancy metrics and optional point-pair connectivity checks.
+- Parameter validation and regression tests, including exact tiled-ground equivalence against legacy masks.
+- PyYAML dependency for evaluation map loading.
+
+### Notes
+
+- The per-tile sorted-slice performance fix was already present in the starting checkout; it is now protected by an equivalence test.
+- These changes have not been released or validated as safe Nav2 maps. Heightmap failure modes and approximate raycasting are documented; no BIM accuracy improvement is claimed.
+
 ## [0.1.0] - 2026-11-03
 
 ### Added
