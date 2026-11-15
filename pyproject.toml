@@ -20,6 +20,7 @@ dev = ["pytest>=7", "build>=1.2", "setuptools>=61", "wheel"]
 [project.scripts]
 pcd2grid = "pcd2grid.cli:main"
 pcd2grid-eval = "pcd2grid.eval:main"
+pcd2grid-scans = "pcd2grid.scans:main"
 
 [project.urls]
 Repository = "https://github.com/Leonhart999/pcd2grid"

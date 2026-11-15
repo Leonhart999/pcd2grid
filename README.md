@@ -36,8 +36,9 @@ The output map uses the same frame as the input cloud (for FAST-LIO2 that is `ca
 | --- | --- |
 | `--res` | Cell size in metres (default 0.05) |
 | `--obs-min`, `--obs-max` | Obstacle height band above ground, in metres |
-| `--ground-mode` | `plane` (default), `grid` (per-tile planes for ramps and uneven floors) or `none` (absolute z) |
+| `--ground-mode` | `plane` (default), `grid` (per-tile planes for ramps and uneven floors), `none` (absolute z) or `auto` (`grid` when the cloud's long side exceeds `--auto-ground-size`, otherwise `plane`) |
 | `--tile` | Tile size for `--ground-mode grid` |
+| `--auto-ground-size` | Long-side threshold in metres for `--ground-mode auto` (default 100) |
 | `--level` | Detect the floor plane and rotate the cloud so it is horizontal; the rotation is saved to `<prefix>_level.txt` |
 | `--ground-z` | Approximate floor height to start the ground fit from, if the automatic choice is wrong |
 | `--max-cells` | Refuse grids larger than this (default 100 million cells) |
@@ -115,6 +116,86 @@ poses and sensor calibration, not `estimated.tum` plus a fused map alone.
 
 No new SLABIM accuracy or navigation improvement is claimed from these features.
 In particular, more free cells is not proof of a more accurate map.
+
+### Per-frame evidence grids (`pcd2grid-scans`)
+
+A fused point cloud cannot tell a wall from a person who walked past once. `pcd2grid-scans` builds the grid from the individual scans and their poses instead, and accepts a cell as occupied only when several frames support it.
+
+```bash
+pcd2grid-scans scans/ trajectory.tum maps/corridor --sensor-to-body lidar_to_base.txt
+```
+
+Input:
+
+- `scans/`: one point cloud per frame, in the **sensor frame** (`.pcd`, `.ply`, `.npy`, `.las`, `.laz`).
+- `trajectory.tum`: a TUM trajectory (`t x y z qx qy qz qw`) with the pose of the sensor frame in a **level world frame** (z up, one floor). If the poses belong to another frame, for example the robot base, pass the 4x4 transform from the cloud frame to that frame with `--sensor-to-body` (txt/npy file or 16 numbers).
+- Frames and poses are paired by timestamp when every file name carries one: a plain number in seconds (`1793427856.1.pcd`) or `<index>_<unix time>` such as `003136_1793427856000031948.pcd`, where the time is in s, ms, us or ns. Frames with no pose within `--max-dt` (default 0.05 s) are skipped and reported. Otherwise frames are paired by order, which needs equal counts. `--match stamp` or `--match order` forces one of the two.
+
+How a cell is classified:
+
+1. Height is measured from the floor under the sensor of each frame. The sensor height is estimated from the scans (lowest strong peak of the heights within 4 m) or given with `--sensor-height`; the output states which one was used.
+2. A cell is **occupied** if obstacle-height points (`--obs-min` to `--obs-max`) were seen in it in at least `--min-hits` frames, those frames span at least `--min-span` m of the path, and the hits are at least `--occ-ratio` of the hits plus the beams of other frames that passed through the cell.
+3. A cell is **free** if a frame saw the floor there, at least two beams passed through it, or it lies within `--robot-radius` of the trajectory. Everything else is unknown.
+4. Points farther than `--map-range` (default 20 m) from the sensor are not used, because angular error grows with range.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--res` | 0.05 | Cell size, m |
+| `--map-range` | 20 | Points farther from the sensor are ignored, m |
+| `--obs-min`, `--obs-max` | 0.10, 0.70 | Obstacle height band above the local floor, m |
+| `--ground-tol` | 0.05 | Height below which a point counts as floor, m |
+| `--scan-stride` | 2 | Use every n-th frame |
+| `--ray-deg` | 0.5 | Azimuth bin of the free-space rays, degrees |
+| `--min-hits` | 4 | Frames that must see an obstacle point in the cell |
+| `--min-span` | 1.0 | Path length between the first and last frame that hit the cell, m |
+| `--occ-ratio` | 0.10 | Minimum hits / (hits + beams that passed through) |
+| `--robot-radius` | 0.3 | Cells this close to the trajectory are free, m; 0 disables |
+| `--closing` | 2 | Iterations of the 3x3 closing of free space |
+| `--sensor-height` | 0 | Sensor height above the floor, m; 0 estimates it |
+| `--max-cells` | 40,000,000 | Refuse grids larger than this before cropping |
+
+It also accepts `--mode`, `--npy`, `--no-preview`, `--save-evidence` and `--report`; run `pcd2grid-scans --help` for the full list. The yaml uses `free_thresh: 0.15`, like `pcd2grid`.
+
+#### Example: HEU61 corridor loop
+
+A wheeled robot drove one loop (about 620 m) through the corridors of a building with a 96-ring front lidar. The poses come from FAST-LIO2 followed by an offline planar loop-closure step. The command and its output with the default parameters, run on the raw front-lidar PCD files of that recording:
+
+```bash
+pcd2grid-scans front_lidar/ traj_loop.tum maps/corridor --sensor-to-body front_to_body.txt
+```
+
+```text
+  283 of 10943 frames have no pose and are skipped
+frames: 10660 matched, 5330 used; sensor height 0.49 m (estimated)
+grid 3023 x 4003 cells (151.2 m x 200.2 m), occupied 0.8%, free 9.3%
+```
+
+The images below were made from the same recording and poses with the same algorithm, using the FAST-LIO2 body-frame scans recorded by the author's robot console (3309 x 4096 cells, occupied 0.6%, free 9.4%).
+
+Whole map. Left: the loop-closed point map projected with the height band. Right: the evidence grid.
+
+![HEU61 loop: projection of the loop-closed point map next to the per-frame evidence grid](docs/images/scans_full_compare.png)
+
+A corridor junction, 24 m window. Left: point-map projection from odometry poses without loop closure. Middle: the same projection with loop-closed poses. Right: the evidence grid.
+
+![Corridor junction: point-map projection without loop closure, with loop closure, and the evidence grid](docs/images/scans_junction_compare.png)
+
+The walls become thin continuous lines and the scattered points inside the corridor disappear. The fan-shaped free areas outside the walls are beams that passed through open doors or glass into rooms; they are free by the rule above, not verified free space. The large unknown area in the middle is real: the robot only drove along the corridors.
+
+What this does and does not show:
+
+- It is a visual comparison on one recording from one robot in one environment. There is no ground truth, and it has not been loaded in Nav2 for navigation.
+- The default parameters (20 m range, 4 hits, 1 m span, 0.10 ratio) were tuned on this data. On a different sensor or environment they may need changes.
+- The 22 unit tests use a synthetic room with a box and a short-lived object; they check the logic, not accuracy on real scenes.
+
+Limitations:
+
+- The poses must already be in a level world frame (z up). There is no levelling and no multi-floor support. Pose errors go directly into wall positions: a drifting or doubled trajectory gives doubled walls.
+- Moving objects are removed only if they are seen in too few frames or too short a stretch of path; slow or standing people can stay.
+- Raw scans are used as they are, with no motion deskewing.
+- The sensor height is one value for the whole run.
+
+This replaces the experimental `--trajectory` ray casting of `pcd2grid` when the real per-frame scans and poses are available.
 
 ### BIM/grid evaluation
 
