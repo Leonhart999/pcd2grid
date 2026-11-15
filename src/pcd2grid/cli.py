@@ -47,8 +47,11 @@ def build_parser():
     ap.add_argument("--obs-max", type=float, default=0.7, help="maximum obstacle height above ground, m")
     ap.add_argument("--ground-tol", type=float, default=0.05, help="max distance from ground to count as ground, m")
     ap.add_argument("--min-points", type=int, default=2, help="obstacle points needed to occupy a cell")
-    ap.add_argument("--ground-mode", choices=["plane", "grid", "heightmap", "none"], default="plane",
-                    help="plane: 全局平面；grid: 分块平面；heightmap: 连续高度图；none: 绝对 z")
+    ap.add_argument("--ground-mode", choices=["plane", "grid", "heightmap", "none", "auto"], default="plane",
+                    help="plane: 全局平面；grid: 分块平面；heightmap: 连续高度图；none: 绝对 z；"
+                         "auto: 点云长边超过 --auto-ground-size 时用 grid，否则用 plane")
+    ap.add_argument("--auto-ground-size", type=float, default=100.0,
+                    help="--ground-mode auto 切换到分块的长边阈值，m（默认 100）")
     ap.add_argument("--ground-cell", type=float, default=0.5, help="地面高度图格宽，m")
     ap.add_argument("--ground-smooth", type=float, default=0.5, help="地面高度图高斯平滑尺度，m")
     ap.add_argument("--min-obstacle-area", type=float, default=0.0, help="删除小于此面积的孤立障碍，m²，默认关闭")
@@ -95,6 +98,7 @@ def main(argv=None):
         params = GridParams(
             res=args.res, obs_min=args.obs_min, obs_max=args.obs_max, ground_tol=args.ground_tol,
             min_points=args.min_points, ground_mode=args.ground_mode, tile=args.tile,
+            auto_ground_size=args.auto_ground_size,
             up_axis=args.up_axis, transform=args.transform, crop=args.crop, voxel=args.voxel,
             z_slab=args.z_slab, inflate=args.inflate, origin=args.origin, ground_z=args.ground_z,
             max_cells=args.max_cells, level=args.level, layers=args.compare,

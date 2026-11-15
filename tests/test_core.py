@@ -175,3 +175,22 @@ def test_cli_and_yaml_output(tmp_path):
     assert "resolution: 0.1" in yaml_text and "mode: trinary" in yaml_text
     assert np.array(Image.open(str(out) + ".pgm")).dtype == np.uint8
     assert main([str(tmp_path / "missing.pcd"), str(out)]) == 1
+
+
+def test_auto_ground_mode_picks_plane_for_small_cloud():
+    r = convert(make_room(), GridParams(res=0.1, ground_mode="auto"))
+    assert "auto -> plane" in r.info
+    base = convert(make_room(), GridParams(res=0.1, ground_mode="plane"))
+    assert (r.grid == base.grid).all()
+
+
+def test_auto_ground_mode_picks_grid_above_threshold():
+    r = convert(make_room(), GridParams(res=0.1, ground_mode="auto", auto_ground_size=5.0))
+    assert "auto -> grid" in r.info
+    base = convert(make_room(), GridParams(res=0.1, ground_mode="grid"))
+    assert (r.grid == base.grid).all()
+
+
+def test_auto_ground_size_must_be_positive():
+    with pytest.raises(ValueError):
+        convert(make_room(), GridParams(res=0.1, ground_mode="auto", auto_ground_size=0.0))

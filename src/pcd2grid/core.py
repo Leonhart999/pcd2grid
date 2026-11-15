@@ -25,8 +25,9 @@ class GridParams:
     obs_max: float = 0.7
     ground_tol: float = 0.05
     min_points: int = 2
-    ground_mode: str = "plane"          # plane | grid | none
+    ground_mode: str = "plane"          # plane | grid | heightmap | none | auto
     tile: float = 5.0                   # tile size in metres for ground_mode=grid
+    auto_ground_size: float = 100.0     # ground_mode=auto: use grid when the long side exceeds this, m
     up_axis: str = "z"                  # x, y, z, -x, -y, -z
     transform: np.ndarray = None        # optional 4x4 matrix applied before projection
     crop: tuple = None                  # (xmin, xmax, ymin, ymax, zmin, zmax); None entries are open
@@ -192,8 +193,19 @@ def ground_warnings(h, a, b):
     return warnings
 
 
-def height_above_ground(xyz, mode, tile, ground_z=None):
-    """Return per-point height above the estimated ground, a description and warnings."""
+def height_above_ground(xyz, mode, tile, ground_z=None, auto_size=100.0):
+    """Return per-point height above the estimated ground, a description and warnings.
+
+    mode "auto" picks "grid" when the long side of the XY bounding box exceeds `auto_size`
+    metres (drift and floor undulation accumulate with distance, so one global plane stops
+    fitting) and "plane" otherwise.
+    """
+    auto_note = ""
+    if mode == "auto":
+        extent = float(np.ptp(xyz[:, :2], axis=0).max())
+        mode = "grid" if extent > auto_size else "plane"
+        auto_note = (f"auto -> {mode} (long side {extent:.0f} m "
+                     f"{'>' if mode == 'grid' else '<='} {auto_size:g} m); ")
     if mode == "none":
         return xyz[:, 2].copy(), "no ground estimation (absolute z)", []
     g0 = estimate_ground(xyz[:, 2]) if ground_z is None else ground_z
@@ -202,7 +214,7 @@ def height_above_ground(xyz, mode, tile, ground_z=None):
     warnings = ground_warnings(h, a, b)
     if mode == "plane":
         tilt = np.degrees(np.arctan(np.hypot(a, b)))
-        return h, f"ground plane tilt {tilt:.2f} deg, height {c:.3f} m at the origin", warnings
+        return h, auto_note + f"ground plane tilt {tilt:.2f} deg, height {c:.3f} m at the origin", warnings
     if mode != "grid":
         raise ValueError(f"invalid ground mode '{mode}'")
     # Per-tile plane fit; tiles with too few ground points fall back to the global plane
@@ -227,7 +239,7 @@ def height_above_ground(xyz, mode, tile, ground_z=None):
         la, lb, lc = fit_ground_plane(pts, zl)
         out[sel] = pts[:, 2] - (la * pts[:, 0] + lb * pts[:, 1] + lc)
         n_local += 1
-    return out, f"local ground planes fitted in {n_local} tiles of {tile:g} m", warnings
+    return out, auto_note + f"local ground planes fitted in {n_local} tiles of {tile:g} m", warnings
 
 
 @dataclass
@@ -250,7 +262,7 @@ class GridResult:
 def convert(xyz, p=None):
     """Convert an (N, 3) point cloud to a GridResult."""
     p = p or GridParams()
-    for name in ("res", "tile", "ground_cell", "ray_range"):
+    for name in ("res", "tile", "ground_cell", "ray_range", "auto_ground_size"):
         if not np.isfinite(getattr(p, name)) or getattr(p, name) <= 0:
             raise ValueError(f"{name} 必须是有限正数")
     for name in ("ground_tol", "voxel", "inflate", "ground_smooth", "min_obstacle_area", "min_free_area", "robot_radius"):
@@ -266,7 +278,7 @@ def convert(xyz, p=None):
         raise ValueError("ground_z 必须是有限数")
     if not np.isfinite([p.obs_min, p.obs_max]).all() or p.obs_min > p.obs_max:
         raise ValueError("障碍高度区间无效")
-    if p.ground_mode not in ("plane", "grid", "heightmap", "none"):
+    if p.ground_mode not in ("plane", "grid", "heightmap", "none", "auto"):
         raise ValueError("无效的 ground_mode")
     xyz = np.asarray(xyz, dtype=np.float64)
     if xyz.ndim != 2 or xyz.shape[1] != 3 or not np.isfinite(xyz).all():
@@ -323,7 +335,8 @@ def convert(xyz, p=None):
         ground_info = f"连续地面高度图，格宽 {p.ground_cell:g} m，观测覆盖 {coverage:.1%}"
         warnings = ["高度图是单层下包络估计；大面积缺失地面、桌面或多楼层可能误分类，请检查输出"]
     else:
-        h, ground_info, warnings = height_above_ground(xyz, p.ground_mode, p.tile, p.ground_z)
+        h, ground_info, warnings = height_above_ground(xyz, p.ground_mode, p.tile, p.ground_z,
+                                                       p.auto_ground_size)
     warnings = pre_warnings + warnings
     ix = np.floor((xyz[:, 0] - xmin) / p.res).astype(np.int64)
     iy = np.floor((xyz[:, 1] - ymin) / p.res).astype(np.int64)
