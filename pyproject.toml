@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pcd2grid"
-version = "0.1.0"
+version = "0.2.0"
 description = "Convert 3D point cloud maps (PCD, PLY, LAS/LAZ, NPY) into 2D occupancy grids for ROS 2 Nav2"
 readme = "README.md"
 requires-python = ">=3.9"

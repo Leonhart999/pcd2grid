@@ -4,6 +4,8 @@ All notable changes to pcd2grid are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
 ### Added
 
 - `--ground-mode auto`: uses the tiled `grid` ground model when the long side of the point cloud's XY bounding box (after crop and `--level`) exceeds `--auto-ground-size` (default 100 m), and the single global `plane` otherwise. The decision is written to the info line and the `--report` JSON. The default mode stays `plane`.
@@ -19,7 +21,7 @@ All notable changes to pcd2grid are documented here.
 ### Notes
 
 - The per-tile sorted-slice performance fix was already present in the starting checkout; it is now protected by an equivalence test.
-- These changes have not been released or validated as safe Nav2 maps. Heightmap failure modes and approximate raycasting are documented; no BIM accuracy improvement is claimed.
+- These changes have not been validated as safe Nav2 maps. Heightmap failure modes and approximate raycasting are documented; no BIM accuracy improvement is claimed.
 
 ## [0.1.0] - 2026-11-03
 
